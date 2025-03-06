@@ -1,4 +1,4 @@
-## PE3R: Perception-Efficient 3D Reconstruction
+# PE3R: Perception-Efficient 3D Reconstruction
 <div align="center">
   <img src="./imgs/pe3r.gif" width="100%" ></img>
   <br>
