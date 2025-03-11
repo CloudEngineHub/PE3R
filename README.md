@@ -11,7 +11,7 @@
 > **PE3R: Perception-Efficient 3D Reconstruction**    
 > [Jie Hu](https://hujiecpp.github.io), [Shizun Wang](https://littlepure2333.github.io/home/), [Xinchao Wang](https://sites.google.com/site/sitexinchaowang/)    
 > [xML Lab, National University of Singapore](https://sites.google.com/view/xml-nus/home?authuser=0)    
-> 📔 [[paper]]() 🎥 [[video]]() 🤗 [[demo]](https://huggingface.co/spaces/hujiecpp/PE3R)
+> 📔 [[paper]](https://arxiv.org/abs/2503.07507) 🎥 [[video]](https://youtu.be/iFRijE4GQv4) 🤗 [[demo]](https://huggingface.co/spaces/hujiecpp/PE3R)
 
 ### Why PE3R
 * 🚀 Input efficiency: Operate solely with 2D images.
@@ -31,6 +31,7 @@ pip install requirements.txt
 python pe3r_demo.py
 ```
 
-### Bibtex
-```
-```
+### Acknowledgements
+- [DUSt3R](https://github.com/naver/dust3r) / [MAST3R](https://github.com/naver/mast3r)
+- [SAM](https://github.com/facebookresearch/segment-anything) / [SAM2](https://github.com/facebookresearch/sam2) / [MobileSAM](https://github.com/ChaoningZhang/MobileSAM)
+- [SigLIP](https://github.com/google-research/big_vision)
