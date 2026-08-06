@@ -593,9 +593,11 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                                                    ("swin: sliding window", "swin"),
                                                    ("oneref: match one image with all", "oneref")],
                                                   value='complete', label="Scenegraph",
-                                                  info="Define how to make pairs",
+                                                  info="Define how to make pairs. 'complete' is N*(N-1) pairs "
+                                                       "and its memory cost grows quadratically; switch to "
+                                                       "'swin' or 'oneref' for long sequences.",
                                                   interactive=True,
-                                                  visible=False)
+                                                  visible=True)
                 winsize = gradio.Slider(label="Scene Graph: Window Size", value=1,
                                         minimum=1, maximum=1, step=1, visible=False)
                 refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0, maximum=0, step=1, visible=False)
