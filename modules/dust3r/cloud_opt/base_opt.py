@@ -556,12 +556,12 @@ def global_alignment_iter(net, cur_iter, niter, lr_base, lr_min, optimizer, sche
     loss = net(cur_iter)
     if loss == 0:
         optimizer.step()
-        return float(loss), lr 
+        return 0, lr
 
     loss.backward()
     optimizer.step()
 
-    return float(loss), lr
+    return loss.item(), lr
 
 
 @torch.no_grad()
