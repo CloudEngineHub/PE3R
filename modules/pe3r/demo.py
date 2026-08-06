@@ -280,6 +280,12 @@ def get_mask_from_img_sam1(mobilesamv2, yolov8, sam1_image, yolov8_image, origin
 
     return ret_mask
 
+def pool_siglip_output(feats):
+    """SiglipModel.get_{image,text}_features returns the pooled tensor on
+    transformers 4.x, but the whole BaseModelOutputWithPooling on 5.x."""
+    return feats if torch.is_tensor(feats) else feats.pooler_output
+
+
 @torch.no_grad
 def get_cog_feats(images, pe3r):
     cog_seg_maps = []
@@ -384,7 +390,7 @@ def get_cog_feats(images, pe3r):
         inputs = pe3r.siglip_processor(images=seg_imgs, return_tensors="pt")
         inputs = {key: value.to("cuda") for key, value in inputs.items()}
         
-        image_features = pe3r.siglip.get_image_features(**inputs)
+        image_features = pool_siglip_output(pe3r.siglip.get_image_features(**inputs))
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         image_features = image_features.detach().cpu()
 
@@ -518,7 +524,7 @@ def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_c
     inputs = pe3r.siglip_tokenizer(text=texts, padding="max_length", return_tensors="pt")
     inputs = {key: value.to("cuda") for key, value in inputs.items()}
     with torch.no_grad():
-        text_feats =pe3r.siglip.get_text_features(**inputs)
+        text_feats = pool_siglip_output(pe3r.siglip.get_text_features(**inputs))
         text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)
     scene.render_image(text_feats, threshold)
     scene.ori_imgs = scene.rendered_imgs
