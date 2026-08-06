@@ -2,6 +2,7 @@ import math
 
 import gradio
 import os
+import traceback
 import torch
 import numpy as np
 import functools
@@ -471,6 +472,10 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
     # if mode == GlobalAlignerMode.PointCloudOptimizer:
     loss = scene_1.compute_global_alignment(tune_flg=True, init='mst', niter=niter, schedule=schedule, lr=lr)
 
+    # The second pass only overwrites imgs[i]['img'], so 'ori_img' -- and with it
+    # scene_1.ori_imgs -- still holds the unrendered images the fallback wants.
+    ori_imgs = scene_1.ori_imgs
+
     try:
         import torchvision.transforms as tvf
         ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -481,15 +486,15 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
         output = inference(pairs, pe3r.mast3r, device, batch_size=1, verbose=not silent)
         mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
         scene = global_aligner(output, cog_seg_maps, rev_cog_seg_maps, cog_feats, device=device, mode=mode, verbose=not silent)
-        ori_imgs = scene.ori_imgs
         lr = 0.01
         # if mode == GlobalAlignerMode.PointCloudOptimizer:
         loss = scene.compute_global_alignment(tune_flg=False, init='mst', niter=niter, schedule=schedule, lr=lr)
-    except Exception as e:
+    except Exception:
         scene = scene_1
         scene.imgs = ori_imgs
         scene.ori_imgs = ori_imgs
-        print(e)
+        print('Second alignment pass failed, falling back to the first pass:')
+        traceback.print_exc()
 
 
     outfile = get_3D_model_from_scene(outdir, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
