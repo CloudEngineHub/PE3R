@@ -483,6 +483,10 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
             # print(imgs[i]['img'].shape, scene.imgs[i].shape, ImgNorm(scene.imgs[i])[None])
             imgs[i]['img'] = ImgNorm(scene_1.imgs[i])[None]
         pairs = make_pairs(imgs, scene_graph=scenegraph_type, prefilter=None, symmetrize=True)
+        # scene_1 already holds its own copy on the device, and the assignment below only
+        # rebinds after the new results exist -- so drop the first pass's predictions
+        # here to keep just one set of them in host memory.
+        del output
         output = inference(pairs, pe3r.mast3r, device, batch_size=1, verbose=not silent)
         mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
         scene = global_aligner(output, cog_seg_maps, rev_cog_seg_maps, cog_feats, device=device, mode=mode, verbose=not silent)
