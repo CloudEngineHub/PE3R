@@ -101,20 +101,26 @@ class BasePCOptimizer (nn.Module):
 
         # possibly store images for show_pointcloud
         self.imgs = None
-        if 'img' in view1 and 'img' in view2:
+        # inference() hands over a single deduplicated copy per image; fall back to the
+        # per-pair tensors when the output comes from somewhere that still carries them.
+        img_store = view1.get('img_store')
+        if img_store is None and 'img' in view1 and 'img' in view2:
+            img_store = {}
+            for v in range(len(self.edges)):
+                for view in (view1, view2):
+                    img_store.setdefault(view['idx'][v],
+                                         {k: view[k][v] for k in ('img', 'ori_img', 'smoothed_img')})
+
+        if img_store is not None:
             imgs = [torch.zeros((3,)+hw) for hw in self.imshapes]
             smoothed_imgs = [torch.zeros((3,)+hw) for hw in self.imshapes]
             ori_imgs = [torch.zeros((3,)+hw) for hw in self.imshapes]
-            for v in range(len(self.edges)):
-                idx = view1['idx'][v]
-                imgs[idx] = view1['img'][v]
-                smoothed_imgs[idx] = view1['smoothed_img'][v]
-                ori_imgs[idx] = view1['ori_img'][v]
-
-                idx = view2['idx'][v]
-                imgs[idx] = view2['img'][v]
-                smoothed_imgs[idx] = view2['smoothed_img'][v]
-                ori_imgs[idx] = view2['ori_img'][v]
+            for idx, view in img_store.items():
+                if idx >= len(imgs):
+                    continue
+                imgs[idx] = view['img']
+                smoothed_imgs[idx] = view['smoothed_img']
+                ori_imgs[idx] = view['ori_img']
 
             self.imgs = rgb(imgs)
             self.ori_imgs = rgb(ori_imgs)
@@ -443,7 +449,7 @@ class BasePCOptimizer (nn.Module):
         return refresh_confidence_map.view(H, W)
 
 
-    @torch.cuda.amp.autocast(enabled=False)
+    @torch.amp.autocast("cuda", enabled=False)
     def compute_global_alignment(self, tune_flg=False, init=None, niter_PnP=10, **kw):
         
         if tune_flg:

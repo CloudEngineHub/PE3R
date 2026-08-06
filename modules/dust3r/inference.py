@@ -52,8 +52,36 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
     return result[ret] if ret else result
 
 
+# The global aligner only reads pts3d/conf from the predictions, and it needs exactly one
+# copy of each image. With a 'complete' scene graph every image sits in N-1 pairs, so
+# keeping MASt3R's per-pixel descriptors and the per-pair image tensors costs ~37 of the
+# ~43 MB each pair otherwise occupies in host RAM. Drop them and keep the images once.
+UNUSED_PRED_KEYS = ('desc', 'desc_conf')
+IMG_KEYS = ('img', 'ori_img', 'smoothed_img')
+
+
+def dedup_images(pairs):
+    """One copy of each image, keyed by its index in the original image list."""
+    store = {}
+    for view in (view for pair in pairs for view in pair):
+        idx = int(view['idx'])
+        if idx not in store:
+            store[idx] = {k: view[k][0] for k in IMG_KEYS if k in view}
+    return store
+
+
+def drop_unused(res):
+    for view in (res['view1'], res['view2']):
+        for k in IMG_KEYS:
+            view.pop(k, None)
+    for pred in (res['pred1'], res['pred2']):
+        for k in UNUSED_PRED_KEYS:
+            pred.pop(k, None)
+    return res
+
+
 @torch.no_grad()
-def inference(pairs, model, device, batch_size=8, verbose=True):
+def inference(pairs, model, device, batch_size=8, verbose=True, use_amp=False):
     if verbose:
         print(f'>> Inference with model on {len(pairs)} image pairs')
     result = []
@@ -63,11 +91,15 @@ def inference(pairs, model, device, batch_size=8, verbose=True):
     if multiple_shapes:  # force bs=1
         batch_size = 1
 
+    img_store = dedup_images(pairs)
+
     for i in tqdm.trange(0, len(pairs), batch_size, disable=not verbose):
-        res = loss_of_one_batch(collate_with_cat(pairs[i:i + batch_size]), model, None, device)
-        result.append(to_cpu(res))
+        res = loss_of_one_batch(collate_with_cat(pairs[i:i + batch_size]), model, None, device,
+                                use_amp=use_amp)
+        result.append(to_cpu(drop_unused(res)))
 
     result = collate_with_cat(result, lists=multiple_shapes)
+    result['view1']['img_store'] = img_store
 
     return result
 
