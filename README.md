@@ -23,10 +23,25 @@
 ```bash
 conda create --name pe3r
 conda activate pe3r
-git clone 
-pip install requirements.txt
+git clone https://github.com/hujiecpp/PE3R.git
+cd PE3R
+pip install -r requirements.txt
+```
+#### Checkpoints
+MASt3R, SAM 2, SAM and SigLIP are pulled from the Hugging Face Hub on first run.
+The two remaining weights are published under the `checkpoints`
+[release](https://github.com/hujiecpp/PE3R/releases/tag/checkpoints) and have to
+be downloaded manually:
+```bash
+mkdir -p checkpoints
+curl -L -o checkpoints/ObjectAwareModel.pt \
+  https://github.com/hujiecpp/PE3R/releases/download/checkpoints/ObjectAwareModel.pt
+curl -L -o checkpoints/Prompt_guided_Mask_Decoder.pt \
+  https://github.com/hujiecpp/PE3R/releases/download/checkpoints/Prompt_guided_Mask_Decoder.pt
 ```
 #### Usage
+Run from the repository root — the checkpoint paths are relative to the working
+directory.
 ```bash
 python pe3r_demo.py
 ```

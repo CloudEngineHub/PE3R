@@ -13,11 +13,15 @@ from typing import Optional
 
 import cv2
 import numpy as np
-import pkg_resources as pkg
 import psutil
 import requests
 import torch
 from matplotlib import font_manager
+
+# 🌟 新增的现代依赖检查库，替代 pkg_resources
+import importlib.metadata
+from packaging.version import parse as parse_version, Version
+from packaging.requirements import Requirement
 
 from ultralytics.yolo.utils import (AUTOINSTALL, LOGGER, ONLINE, ROOT, USER_CONFIG_DIR, TryExcept, clean_url, colorstr,
                                     downloads, emojis, is_colab, is_docker, is_jupyter, is_kaggle, is_online,
@@ -27,16 +31,13 @@ from ultralytics.yolo.utils import (AUTOINSTALL, LOGGER, ONLINE, ROOT, USER_CONF
 def is_ascii(s) -> bool:
     """
     Check if a string is composed of only ASCII characters.
-
     Args:
         s (str): String to be checked.
-
     Returns:
         bool: True if the string is composed only of ASCII characters, False otherwise.
     """
     # Convert list, tuple, None, etc. to string
     s = str(s)
-
     # Check if the string is composed of only ASCII characters
     return all(ord(c) < 128 for c in s)
 
@@ -45,19 +46,9 @@ def check_imgsz(imgsz, stride=32, min_dim=1, max_dim=2, floor=0):
     """
     Verify image size is a multiple of the given stride in each dimension. If the image size is not a multiple of the
     stride, update it to the nearest multiple of the stride that is greater than or equal to the given floor value.
-
-    Args:
-        imgsz (int | cList[int]): Image size.
-        stride (int): Stride value.
-        min_dim (int): Minimum number of dimensions.
-        floor (int): Minimum allowed value for image size.
-
-    Returns:
-        (List[int]): Updated image size.
     """
     # Convert stride to integer if it is a tensor
     stride = int(stride.max() if isinstance(stride, torch.Tensor) else stride)
-
     # Convert image size to list if it is an integer
     if isinstance(imgsz, int):
         imgsz = [imgsz]
@@ -66,7 +57,6 @@ def check_imgsz(imgsz, stride=32, min_dim=1, max_dim=2, floor=0):
     else:
         raise TypeError(f"'imgsz={imgsz}' is of invalid type {type(imgsz).__name__}. "
                         f"Valid imgsz types are int i.e. 'imgsz=640' or list i.e. 'imgsz=[640,640]'")
-
     # Apply max_dim
     if len(imgsz) > max_dim:
         msg = "'train' and 'val' imgsz must be an integer, while 'predict' and 'export' imgsz may be a [h, w] list " \
@@ -77,14 +67,11 @@ def check_imgsz(imgsz, stride=32, min_dim=1, max_dim=2, floor=0):
         imgsz = [max(imgsz)]
     # Make image size a multiple of the stride
     sz = [max(math.ceil(x / stride) * stride, floor) for x in imgsz]
-
     # Print warning message if image size was updated
     if sz != imgsz:
         LOGGER.warning(f'WARNING ⚠️ imgsz={imgsz} must be multiple of max stride {stride}, updating to {sz}')
-
     # Add missing dimensions if necessary
     sz = [sz[0], sz[0]] if min_dim == 2 and len(sz) == 1 else sz[0] if min_dim == 1 and len(sz) == 1 else sz
-
     return sz
 
 
@@ -96,19 +83,9 @@ def check_version(current: str = '0.0.0',
                   verbose: bool = False) -> bool:
     """
     Check current version against the required minimum version.
-
-    Args:
-        current (str): Current version.
-        minimum (str): Required minimum version.
-        name (str): Name to be used in warning message.
-        pinned (bool): If True, versions must match exactly. If False, minimum version must be satisfied.
-        hard (bool): If True, raise an AssertionError if the minimum version is not met.
-        verbose (bool): If True, print warning message if minimum version is not met.
-
-    Returns:
-        (bool): True if minimum version is met, False otherwise.
     """
-    current, minimum = (pkg.parse_version(x) for x in (current, minimum))
+    # 🌟 使用 packaging.version.parse 替代 pkg.parse_version
+    current, minimum = (parse_version(x) for x in (current, minimum))
     result = (current == minimum) if pinned else (current >= minimum)  # bool
     warning_message = f'WARNING ⚠️ {name}{minimum} is required by YOLOv8, but {name}{current} is currently installed'
     if hard:
@@ -121,12 +98,6 @@ def check_version(current: str = '0.0.0',
 def check_latest_pypi_version(package_name='ultralytics'):
     """
     Returns the latest version of a PyPI package without downloading or installing it.
-
-    Parameters:
-        package_name (str): The name of the package to find the latest version for.
-
-    Returns:
-        (str): The latest version of the package.
     """
     with contextlib.suppress(Exception):
         requests.packages.urllib3.disable_warnings()  # Disable the InsecureRequestWarning
@@ -139,15 +110,13 @@ def check_latest_pypi_version(package_name='ultralytics'):
 def check_pip_update_available():
     """
     Checks if a new version of the ultralytics package is available on PyPI.
-
-    Returns:
-        (bool): True if an update is available, False otherwise.
     """
     if ONLINE and is_pip_package():
         with contextlib.suppress(Exception):
             from ultralytics import __version__
             latest = check_latest_pypi_version()
-            if pkg.parse_version(__version__) < pkg.parse_version(latest):  # update is available
+            # 🌟 使用 packaging.version.parse 替代 pkg.parse_version
+            if parse_version(__version__) < parse_version(latest):  # update is available
                 LOGGER.info(f'New https://pypi.org/project/ultralytics/{latest} available 😃 '
                             f"Update with 'pip install -U ultralytics'")
                 return True
@@ -157,25 +126,16 @@ def check_pip_update_available():
 def check_font(font='Arial.ttf'):
     """
     Find font locally or download to user's configuration directory if it does not already exist.
-
-    Args:
-        font (str): Path or name of font.
-
-    Returns:
-        file (Path): Resolved font file path.
     """
     name = Path(font).name
-
     # Check USER_CONFIG_DIR
     file = USER_CONFIG_DIR / name
     if file.exists():
         return file
-
     # Check system fonts
     matches = [s for s in font_manager.findSystemFonts() if font in s]
     if any(matches):
         return matches[0]
-
     # Download to USER_CONFIG_DIR if missing
     url = f'https://ultralytics.com/assets/{name}'
     if downloads.is_url(url):
@@ -186,12 +146,6 @@ def check_font(font='Arial.ttf'):
 def check_python(minimum: str = '3.7.0') -> bool:
     """
     Check current python version against the required minimum version.
-
-    Args:
-        minimum (str): Required minimum version of python.
-
-    Returns:
-        None
     """
     return check_version(platform.python_version(), minimum, name='Python ', hard=True)
 
@@ -200,13 +154,6 @@ def check_python(minimum: str = '3.7.0') -> bool:
 def check_requirements(requirements=ROOT.parent / 'requirements.txt', exclude=(), install=True, cmds=''):
     """
     Check if installed dependencies meet YOLOv8 requirements and attempt to auto-update if needed.
-
-    Args:
-        requirements (Union[Path, str, List[str]]): Path to a requirements.txt file, a single package requirement as a
-            string, or a list of package requirements as strings.
-        exclude (Tuple[str]): Tuple of package names to exclude from checking.
-        install (bool): If True, attempt to auto-update packages that don't meet requirements.
-        cmds (str): Additional commands to pass to the pip install command when auto-updating.
     """
     prefix = colorstr('red', 'bold', 'requirements:')
     check_python()  # check python version
@@ -215,19 +162,26 @@ def check_requirements(requirements=ROOT.parent / 'requirements.txt', exclude=()
         file = requirements.resolve()
         assert file.exists(), f'{prefix} {file} not found, check failed.'
         with file.open() as f:
-            requirements = [f'{x.name}{x.specifier}' for x in pkg.parse_requirements(f) if x.name not in exclude]
+            # 🌟 使用 packaging.requirements.Requirement 替代 pkg.parse_requirements
+            parsed_reqs = [Requirement(line) for line in f if line.strip() and not line.strip().startswith('#')]
+            requirements = [str(x) for x in parsed_reqs if x.name not in exclude]
     elif isinstance(requirements, str):
         requirements = [requirements]
 
     s = ''  # console string
     n = 0  # number of packages updates
+
     for r in requirements:
+        req = Requirement(r)
         try:
-            pkg.require(r)
-        except (pkg.VersionConflict, pkg.DistributionNotFound):  # exception if requirements not met
+            # 🌟 使用 importlib.metadata 替代 pkg.require
+            installed_version = importlib.metadata.version(req.name)
+            if not req.specifier.contains(installed_version, prereleases=True):
+                raise importlib.metadata.PackageNotFoundError
+        except importlib.metadata.PackageNotFoundError:  # 🌟 替代 pkg.VersionConflict/DistributionNotFound
             try:  # attempt to import (slower but more accurate)
                 import importlib
-                importlib.import_module(next(pkg.parse_requirements(r)).name)
+                importlib.import_module(req.name)
             except ImportError:
                 s += f'"{r}" '
                 n += 1
@@ -246,7 +200,6 @@ def check_requirements(requirements=ROOT.parent / 'requirements.txt', exclude=()
                 return False
         else:
             return False
-
     return True
 
 
@@ -254,7 +207,7 @@ def check_suffix(file='yolov8n.pt', suffix='.pt', msg=''):
     """Check file(s) for acceptable suffix."""
     if file and suffix:
         if isinstance(suffix, str):
-            suffix = (suffix, )
+            suffix = (suffix,)
         for f in file if isinstance(file, (list, tuple)) else [file]:
             s = Path(f).suffix.lower().strip()  # file suffix
             if len(s):
@@ -324,13 +277,11 @@ def check_imshow(warn=False):
 def check_yolo(verbose=True, device=''):
     """Return a human-readable YOLO software and hardware summary."""
     from ultralytics.yolo.utils.torch_utils import select_device
-
     if is_jupyter():
         if check_requirements('wandb', install=False):
             os.system('pip uninstall -y wandb')  # uninstall wandb: unwanted account creation prompt with infinite hang
         if is_colab():
             shutil.rmtree('sample_data', ignore_errors=True)  # remove colab /sample_data directory
-
     if verbose:
         # System info
         gib = 1 << 30  # bytes per GiB
@@ -342,7 +293,6 @@ def check_yolo(verbose=True, device=''):
             display.clear_output()
     else:
         s = ''
-
     select_device(device=device, newline=False)
     LOGGER.info(f'Setup complete ✅ {s}')
 
@@ -350,17 +300,6 @@ def check_yolo(verbose=True, device=''):
 def check_amp(model):
     """
     This function checks the PyTorch Automatic Mixed Precision (AMP) functionality of a YOLOv8 model.
-    If the checks fail, it means there are anomalies with AMP on the system that may cause NaN losses or zero-mAP
-    results, so AMP will be disabled during training.
-
-    Args:
-        model (nn.Module): A YOLOv8 model instance.
-
-    Returns:
-        (bool): Returns True if the AMP functionality works correctly with YOLOv8 model, else False.
-
-    Raises:
-        AssertionError: If the AMP checks fail, indicating anomalies with the AMP functionality on the system.
     """
     device = next(model.parameters()).device  # get model device
     if device.type in ('cpu', 'mps'):

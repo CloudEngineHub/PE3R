@@ -2,6 +2,7 @@ import math
 
 import gradio
 import os
+import traceback
 import torch
 import numpy as np
 import functools
@@ -280,55 +281,68 @@ def get_mask_from_img_sam1(mobilesamv2, yolov8, sam1_image, yolov8_image, origin
 
     return ret_mask
 
+def pool_siglip_output(feats):
+    """SiglipModel.get_{image,text}_features returns the pooled tensor on
+    transformers 4.x, but the whole BaseModelOutputWithPooling on 5.x."""
+    return feats if torch.is_tensor(feats) else feats.pooler_output
+
+
 @torch.no_grad
 def get_cog_feats(images, pe3r):
     cog_seg_maps = []
     rev_cog_seg_maps = []
-    inference_state = pe3r.sam2.init_state(images=images.sam2_images, video_height=images.sam2_video_size[0], video_width=images.sam2_video_size[1])
+    # SAM 2's fused attention kernels only accept fp16/bf16; in fp32 they all bail out and
+    # scaled_dot_product_attention silently falls back to the slow math kernel. Run SAM 2
+    # under bf16 autocast and keep everything else (MobileSAM-v2, YOLOv8, SigLIP) in fp32.
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        inference_state = pe3r.sam2.init_state(images=images.sam2_images, video_height=images.sam2_video_size[0], video_width=images.sam2_video_size[1])
     mask_num = 0
 
     sam1_images = images.sam1_images
     sam1_images_size = images.sam1_images_size
     np_images = images.np_images
     np_images_size = images.np_images_size
-    
+
     sam1_masks = get_mask_from_img_sam1(pe3r.mobilesamv2, pe3r.yolov8, sam1_images[0], np_images[0], np_images_size[0], sam1_images_size[0], images.sam1_transform)
-    for mask in sam1_masks:
-        _, _, _ = pe3r.sam2.add_new_mask(
-            inference_state=inference_state,
-            frame_idx=0,
-            obj_id=mask_num,
-            mask=mask,
-        )
-        mask_num += 1
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        for mask in sam1_masks:
+            _, _, _ = pe3r.sam2.add_new_mask(
+                inference_state=inference_state,
+                frame_idx=0,
+                obj_id=mask_num,
+                mask=mask,
+            )
+            mask_num += 1
 
     video_segments = {}  # video_segments contains the per-frame segmentation results
-    for out_frame_idx, out_obj_ids, out_mask_logits in pe3r.sam2.propagate_in_video(inference_state):
-        sam2_masks = (out_mask_logits > 0.0).squeeze(1)
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        for out_frame_idx, out_obj_ids, out_mask_logits in pe3r.sam2.propagate_in_video(inference_state):
+            sam2_masks = (out_mask_logits > 0.0).squeeze(1)
 
-        video_segments[out_frame_idx] = {
-            out_obj_id: sam2_masks[i].cpu().numpy()
-            for i, out_obj_id in enumerate(out_obj_ids)
-        }
+            video_segments[out_frame_idx] = {
+                out_obj_id: sam2_masks[i].cpu().numpy()
+                for i, out_obj_id in enumerate(out_obj_ids)
+            }
 
-        if out_frame_idx == 0:
-            continue
+            if out_frame_idx == 0:
+                continue
 
-        sam1_masks = get_mask_from_img_sam1(pe3r.mobilesamv2, pe3r.yolov8, sam1_images[out_frame_idx], np_images[out_frame_idx], np_images_size[out_frame_idx], sam1_images_size[out_frame_idx], images.sam1_transform)
+            with torch.autocast("cuda", enabled=False):
+                sam1_masks = get_mask_from_img_sam1(pe3r.mobilesamv2, pe3r.yolov8, sam1_images[out_frame_idx], np_images[out_frame_idx], np_images_size[out_frame_idx], sam1_images_size[out_frame_idx], images.sam1_transform)
 
-        for sam1_mask in sam1_masks:
-            flg = 1
-            for sam2_mask in sam2_masks:
-                # print(sam1_mask.shape, sam2_mask.shape)
-                area1 = sam1_mask.sum()
-                area2 = sam2_mask.sum()
-                intersection = (sam1_mask & sam2_mask).sum()
-                if min(intersection / area1, intersection / area2) > 0.25:
-                    flg = 0
-                    break
-            if flg:
-                video_segments[out_frame_idx][mask_num] = sam1_mask.cpu().numpy()
-                mask_num += 1
+            for sam1_mask in sam1_masks:
+                flg = 1
+                for sam2_mask in sam2_masks:
+                    # print(sam1_mask.shape, sam2_mask.shape)
+                    area1 = sam1_mask.sum()
+                    area2 = sam2_mask.sum()
+                    intersection = (sam1_mask & sam2_mask).sum()
+                    if min(intersection / area1, intersection / area2) > 0.25:
+                        flg = 0
+                        break
+                if flg:
+                    video_segments[out_frame_idx][mask_num] = sam1_mask.cpu().numpy()
+                    mask_num += 1
 
     multi_view_clip_feats = torch.zeros((mask_num+1, 1024))
     multi_view_clip_feats_map = {}
@@ -377,7 +391,7 @@ def get_cog_feats(images, pe3r):
         inputs = pe3r.siglip_processor(images=seg_imgs, return_tensors="pt")
         inputs = {key: value.to("cuda") for key, value in inputs.items()}
         
-        image_features = pe3r.siglip.get_image_features(**inputs)
+        image_features = pool_siglip_output(pe3r.siglip.get_image_features(**inputs))
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         image_features = image_features.detach().cpu()
 
@@ -458,6 +472,10 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
     # if mode == GlobalAlignerMode.PointCloudOptimizer:
     loss = scene_1.compute_global_alignment(tune_flg=True, init='mst', niter=niter, schedule=schedule, lr=lr)
 
+    # The second pass only overwrites imgs[i]['img'], so 'ori_img' -- and with it
+    # scene_1.ori_imgs -- still holds the unrendered images the fallback wants.
+    ori_imgs = scene_1.ori_imgs
+
     try:
         import torchvision.transforms as tvf
         ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -465,18 +483,22 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
             # print(imgs[i]['img'].shape, scene.imgs[i].shape, ImgNorm(scene.imgs[i])[None])
             imgs[i]['img'] = ImgNorm(scene_1.imgs[i])[None]
         pairs = make_pairs(imgs, scene_graph=scenegraph_type, prefilter=None, symmetrize=True)
+        # scene_1 already holds its own copy on the device, and the assignment below only
+        # rebinds after the new results exist -- so drop the first pass's predictions
+        # here to keep just one set of them in host memory.
+        del output
         output = inference(pairs, pe3r.mast3r, device, batch_size=1, verbose=not silent)
         mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
         scene = global_aligner(output, cog_seg_maps, rev_cog_seg_maps, cog_feats, device=device, mode=mode, verbose=not silent)
-        ori_imgs = scene.ori_imgs
         lr = 0.01
         # if mode == GlobalAlignerMode.PointCloudOptimizer:
         loss = scene.compute_global_alignment(tune_flg=False, init='mst', niter=niter, schedule=schedule, lr=lr)
-    except Exception as e:
+    except Exception:
         scene = scene_1
         scene.imgs = ori_imgs
         scene.ori_imgs = ori_imgs
-        print(e)
+        print('Second alignment pass failed, falling back to the first pass:')
+        traceback.print_exc()
 
 
     outfile = get_3D_model_from_scene(outdir, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
@@ -511,7 +533,7 @@ def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_c
     inputs = pe3r.siglip_tokenizer(text=texts, padding="max_length", return_tensors="pt")
     inputs = {key: value.to("cuda") for key, value in inputs.items()}
     with torch.no_grad():
-        text_feats =pe3r.siglip.get_text_features(**inputs)
+        text_feats = pool_siglip_output(pe3r.siglip.get_text_features(**inputs))
         text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)
     scene.render_image(text_feats, threshold)
     scene.ori_imgs = scene.rendered_imgs
@@ -571,9 +593,11 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                                                    ("swin: sliding window", "swin"),
                                                    ("oneref: match one image with all", "oneref")],
                                                   value='complete', label="Scenegraph",
-                                                  info="Define how to make pairs",
+                                                  info="Define how to make pairs. 'complete' is N*(N-1) pairs "
+                                                       "and its memory cost grows quadratically; switch to "
+                                                       "'swin' or 'oneref' for long sequences.",
                                                   interactive=True,
-                                                  visible=False)
+                                                  visible=True)
                 winsize = gradio.Slider(label="Scene Graph: Window Size", value=1,
                                         minimum=1, maximum=1, step=1, visible=False)
                 refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0, maximum=0, step=1, visible=False)

@@ -1,7 +1,8 @@
 # Ultralytics YOLO 🚀, GPL-3.0 license
 import os
 
-import pkg_resources as pkg
+# 🌟 移除 pkg_resources，引入现代的版本解析库
+from packaging.version import parse as parse_version
 
 from ultralytics.yolo.utils import LOGGER, TESTS_RUNNING
 from ultralytics.yolo.utils.torch_utils import model_info_for_loggers
@@ -14,7 +15,8 @@ try:
     assert not TESTS_RUNNING  # do not log pytest
 
     ver = version('dvclive')
-    if pkg.parse_version(ver) < pkg.parse_version('2.11.0'):
+    # 🌟 使用 parse_version 替代 pkg.parse_version
+    if parse_version(ver) < parse_version('2.11.0'):
         LOGGER.debug(f'DVCLive is detected but version {ver} is incompatible (>=2.11 required).')
         dvclive = None  # noqa: F811
 except (ImportError, AssertionError, TypeError):

@@ -101,76 +101,63 @@ class BasePCOptimizer (nn.Module):
 
         # possibly store images for show_pointcloud
         self.imgs = None
-        if 'img' in view1 and 'img' in view2:
+        # inference() hands over a single deduplicated copy per image; fall back to the
+        # per-pair tensors when the output comes from somewhere that still carries them.
+        img_store = view1.get('img_store')
+        if img_store is None and 'img' in view1 and 'img' in view2:
+            img_store = {}
+            for v in range(len(self.edges)):
+                for view in (view1, view2):
+                    img_store.setdefault(view['idx'][v],
+                                         {k: view[k][v] for k in ('img', 'ori_img', 'smoothed_img')})
+
+        if img_store is not None:
             imgs = [torch.zeros((3,)+hw) for hw in self.imshapes]
             smoothed_imgs = [torch.zeros((3,)+hw) for hw in self.imshapes]
             ori_imgs = [torch.zeros((3,)+hw) for hw in self.imshapes]
-            for v in range(len(self.edges)):
-                idx = view1['idx'][v]
-                imgs[idx] = view1['img'][v]
-                smoothed_imgs[idx] = view1['smoothed_img'][v]
-                ori_imgs[idx] = view1['ori_img'][v]
-
-                idx = view2['idx'][v]
-                imgs[idx] = view2['img'][v]
-                smoothed_imgs[idx] = view2['smoothed_img'][v]
-                ori_imgs[idx] = view2['ori_img'][v]
+            for idx, view in img_store.items():
+                if idx >= len(imgs):
+                    continue
+                imgs[idx] = view['img']
+                smoothed_imgs[idx] = view['smoothed_img']
+                ori_imgs[idx] = view['ori_img']
 
             self.imgs = rgb(imgs)
             self.ori_imgs = rgb(ori_imgs)
             self.fix_imgs = rgb(ori_imgs)
             self.smoothed_imgs = rgb(smoothed_imgs)
         
-        self.cogs = [torch.zeros((h, w, 1024), device="cuda") for h, w in self.imshapes]
-        semantic_feats = semantic_feats.to("cuda")
-        self.segmaps = [-torch.ones((h, w), device="cuda") for h, w in self.imshapes]
-        self.rev_segmaps = [-torch.ones((h, w), device="cuda") for h, w in self.imshapes]
+        # A per-pixel copy of the semantic features would be h*w*1024 floats per image
+        # (0.56 GB at 288x512), and it is just semantic_feats gathered by the segmap.
+        # Keep the segmap and the feature table and gather on demand in render_image.
+        self.semantic_feats = semantic_feats.to("cuda")
+        self.segmaps = [-torch.ones((h, w), dtype=torch.long, device="cuda") for h, w in self.imshapes]
+        self.rev_segmaps = [-torch.ones((h, w), dtype=torch.long, device="cuda") for h, w in self.imshapes]
         # self.conf_1 = [torch.zeros((h, w), device="cuda") for h, w in self.imshapes]
         # self.conf_2 = [torch.zeros((h, w), device="cuda") for h, w in self.imshapes]
-        for v in range(len(self.edges)):
-            idx = view1['idx'][v]
-
-            h, w = self.cogs[idx].shape[0], self.cogs[idx].shape[1]
+        for idx in set(view1['idx']) | set(view2['idx']):
+            h, w = self.imshapes[idx]
             cog_seg_map = cog_seg_maps[idx]
             cog_seg_map = torch.from_numpy(cv2.resize(cog_seg_map, [w, h], interpolation=cv2.INTER_NEAREST))
             rev_seg_map = rev_cog_seg_maps[idx]
             rev_seg_map = torch.from_numpy(cv2.resize(rev_seg_map, [w, h], interpolation=cv2.INTER_NEAREST))
 
-            y, x = torch.meshgrid(torch.arange(0, h), torch.arange(0, w))
-            x = x.reshape(-1, 1)
-            y = y.reshape(-1, 1)
-            seg = cog_seg_map[y, x].squeeze(-1).long()
-
-            self.cogs[idx] = semantic_feats[seg].reshape(h, w, -1)
-            self.segmaps[idx] = cog_seg_map.cuda()
-            self.rev_segmaps[idx] = rev_seg_map.cuda()
-
-            idx = view2['idx'][v]
-            h, w = self.cogs[idx].shape[0], self.cogs[idx].shape[1]
-            cog_seg_map = cog_seg_maps[idx]
-            cog_seg_map = torch.from_numpy(cv2.resize(cog_seg_map, [w, h], interpolation=cv2.INTER_NEAREST))
-            rev_seg_map = rev_cog_seg_maps[idx]
-            rev_seg_map = torch.from_numpy(cv2.resize(rev_seg_map, [w, h], interpolation=cv2.INTER_NEAREST))
-
-            y, x = torch.meshgrid(torch.arange(0, h), torch.arange(0, w))
-            x = x.reshape(-1, 1)
-            y = y.reshape(-1, 1)
-            seg = cog_seg_map[y, x].squeeze(-1).long()
-
-            self.cogs[idx] = semantic_feats[seg].reshape(h, w, -1)
-            self.segmaps[idx] = cog_seg_map.cuda()
-            self.rev_segmaps[idx] = rev_seg_map.cuda()
+            self.segmaps[idx] = cog_seg_map.long().cuda()
+            self.rev_segmaps[idx] = rev_seg_map.long().cuda()
 
         self.rendered_imgs = []
 
     def render_image(self, text_feats, threshold=0.85):
         self.rendered_imgs = []
 
+        # Cosine similarity is constant within a segment, so score the feature table once
+        # and index it with the segmaps instead of scoring every pixel.
+        seg_similarity = cosine_similarity(self.semantic_feats, text_feats.to("cuda"), dim=-1)
+
         # Collect all cosine similarities to compute min-max normalization
         all_similarities = []
-        for each_cog in self.cogs:
-            similarity_map = cosine_similarity(each_cog.to("cpu"), text_feats.to("cpu").unsqueeze(1), dim=-1)
-            all_similarities.append(similarity_map.squeeze().numpy())
+        for segmap in self.segmaps:
+            all_similarities.append(seg_similarity[segmap].cpu().numpy())
 
         # Flatten and normalize all similarities
         total_similarities = np.concatenate(all_similarities)
@@ -181,7 +168,7 @@ class BasePCOptimizer (nn.Module):
         # normalized_similarities = [(sim - sim.min()) / (sim.max() - sim.min()) for sim in all_similarities]
 
         # Process each image with normalized similarities
-        for i, (each_cog, heatmap) in enumerate(zip(self.cogs, normalized_similarities)):
+        for i, heatmap in enumerate(normalized_similarities):
             mask = heatmap > threshold
 
             # Scale heatmap for visualization
@@ -443,7 +430,7 @@ class BasePCOptimizer (nn.Module):
         return refresh_confidence_map.view(H, W)
 
 
-    @torch.cuda.amp.autocast(enabled=False)
+    @torch.amp.autocast("cuda", enabled=False)
     def compute_global_alignment(self, tune_flg=False, init=None, niter_PnP=10, **kw):
         
         if tune_flg:
@@ -569,12 +556,12 @@ def global_alignment_iter(net, cur_iter, niter, lr_base, lr_min, optimizer, sche
     loss = net(cur_iter)
     if loss == 0:
         optimizer.step()
-        return float(loss), lr 
+        return 0, lr
 
     loss.backward()
     optimizer.step()
 
-    return float(loss), lr
+    return loss.item(), lr
 
 
 @torch.no_grad()
